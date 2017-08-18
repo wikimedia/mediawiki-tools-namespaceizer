@@ -1,0 +1,9 @@
+{
+	"name": "mediawiki/namespaceizer",
+	"description": "Namespace migration script",
+	"autoload": {
+		"psr-4": {
+			"MediaWiki\\Tool\\Namespaceizer\\": "src/"
+		}
+	}
+}
