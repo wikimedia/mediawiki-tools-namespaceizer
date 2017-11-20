@@ -442,13 +442,67 @@ class CoreAliases {
 		'MWUnknownContentModelException' => 'MediaWiki\Exception\UnknownContentModelException',
 	];
 
+	static $existingAliases = [
+		'Blob' => 'Wikimedia\Rdbms\Encasing\Blob',
+		'DBAccessError' => 'Wikimedia\Rdbms\Exception\DBAccessError',
+		'DBConnRef' => 'Wikimedia\Rdbms\Database\DBConnRef',
+		'DBConnectionError' => 'Wikimedia\Rdbms\Exception\DBConnectionError',
+		'DBError' => 'Wikimedia\Rdbms\Exception\DBError',
+		'DBExpectedError' => 'Wikimedia\Rdbms\Exception\DBExpectedError',
+		'DBQueryError' => 'Wikimedia\Rdbms\Exception\DBQueryError',
+		'DBReadOnlyError' => 'Wikimedia\Rdbms\Exception\DBReadOnlyError',
+		'DBReplicationWaitError' => 'Wikimedia\Rdbms\Exception\DBReplicationWaitError',
+		'DBTransactionError' => 'Wikimedia\Rdbms\Exception\DBTransactionError',
+		'DBTransactionSizeError' => 'Wikimedia\Rdbms\Exception\DBTransactionSizeError',
+		'DBUnexpectedError' => 'Wikimedia\Rdbms\Exception\DBUnexpectedError',
+		'Database' => 'Wikimedia\Rdbms\Database\Database',
+		'DatabaseBase' => 'Wikimedia\Rdbms\Database\Database',
+		'DatabaseMssql' => 'Wikimedia\Rdbms\Database\DatabaseMssql',
+		'DatabaseMysql' => 'Wikimedia\Rdbms\Database\DatabaseMysql',
+		'DatabaseMysqlBase' => 'Wikimedia\Rdbms\Database\DatabaseMysqlBase',
+		'DatabaseMysqli' => 'Wikimedia\Rdbms\Database\DatabaseMysqli',
+		'DatabasePostgres' => 'Wikimedia\Rdbms\Database\DatabasePostgres',
+		'DatabaseSqlite' => 'Wikimedia\Rdbms\Database\DatabaseSqlite',
+		'FakeResultWrapper' => 'Wikimedia\Rdbms\Database\ResultWrapper\FakeResultWrapper',
+		'Field' => 'Wikimedia\Rdbms\Field\Field',
+		'IDatabase' => 'Wikimedia\Rdbms\Database\IDatabase',
+		'IMaintainableDatabase' => 'Wikimedia\Rdbms\Database\IMaintainableDatabase',
+		'LBFactory' => 'Wikimedia\Rdbms\LBFactory\LBFactory',
+		'LoadBalancer' => 'Wikimedia\Rdbms\LoadBalancer\LoadBalancer',
+		'LoadBalancerSingle' => 'Wikimedia\Rdbms\LoadBalancer\LoadBalancerSingle',
+		'MaintainableDBConnRef' => 'Wikimedia\Rdbms\Database\MaintainableDBConnRef',
+		'ResultWrapper' => 'Wikimedia\Rdbms\Database\ResultWrapper\ResultWrapper',
+		'TimestampException' => 'Wikimedia\Timestamp\TimestampException',
+	];
+
 	static $ignoreDirs = [
 		'maintenance',
 	];
 
-	public function __construct( $autoloadClasses ) {
+	private $aliases;
+	private $autoloadClasses;
+	private $errorCallback;
+	private $warnCallback;
+	private $valid;
+
+	public function __construct( $autoloadClasses, $errorCallback = null, $warnCallback = null ) {
 		$this->autoloadClasses = $autoloadClasses;
+		$this->errorCallback = $errorCallback;
+		$this->warnCallback = $warnCallback;
 	}
+
+	private function warn( $msg ) {
+		if ( $this->warnCallback ) {
+			call_user_func( $this->warnCallback, $msg );
+		}
+	}
+
+	private function error( $msg ) {
+		if ( $this->errorCallback ) {
+			call_user_func( $this->errorCallback, $msg );
+		}
+		$this->valid = false;
+	}		
 
 	private function getAutoloadClasses() {
 		$autoload = file_get_contents( $this->options['autoloadFile'] );
@@ -461,66 +515,118 @@ class CoreAliases {
 		return substr( $haystack, 0, strlen( $needle ) ) === $needle;
 	}
 
-	public function getAliases() {
-		$aliases = [];
-
-		foreach ( $this->autoloadClasses as $class => $file ) {
-			$dir = dirname( $file );
-
-			if ( isset( self::$renamedClasses[$class] ) ) {
-				$aliases[$class] = self::$renamedClasses[$class];
-				continue;
+	private function addAlias( $source, $dest ) {
+		// Check for reserved words
+		$parts = explode( '\\', $dest );
+		foreach ( $parts as $part ) {
+			if ( ReservedWords::isReserved( $part ) ) {
+				$this->error( "Class name is reserved: $dest" );
 			}
-			
-			if ( isset( self::$namespacesByClass[$class] ) ) {
-				$aliases[$class] = self::$namespacesByClass[$class] . '\\' . $class;
-				continue;
-			}
-
-			if ( isset( self::$deprefixesByDir[$dir] ) ) {
-				list( $namespace, $prefix ) = self::$deprefixesByDir[$dir];
-				if ( $this->startsWith( $class, $prefix ) ) {
-					$aliases[$class] = $namespace . '\\' . substr( $class, strlen( $prefix ) );
-					continue;
-				} else {
-					$aliases[$class] = $namespace . '\\' . $class;
-					continue;
-				}
-			}
-
-			if ( isset( self::$namespacesByDir[$dir] ) ) {
-				$namespace = self::$namespacesByDir[$dir];
-				$slashPos = strrpos( $class, '\\' );
-				if ( $slashPos !== false ) {
-					$priorNamespace = substr( $class, 0, $slashPos );
-					$classPart = substr( $class, $slashPos + 1 );
-					
-					if ( $priorNamespace !== $namespace ) {
-						$aliases[$class] = $namespace . '\\' . $classPart;
-						continue;
-					} else {
-						continue;
-					}
-				} else {
-					$aliases[$class] = $namespace . '\\' . $class;
-					continue;
-				}
-			}
-
-			foreach ( self::$ignoreDirs as $ignoreDir ) {
-				if ( $this->startsWith( $dir, "$ignoreDir/" ) || $dir === $ignoreDir ) {
-					continue 2;
-				}
-			}
-
-			if ( $dir === '.' ) {
-				// profileinfo.php
-				continue;
-			}
-
-			throw new \Exception( "Don't know what to do with class $class in directory $dir" );
 		}
 
-		return $aliases;
+		// Check for conflicts
+		$lcDest = strtolower( $dest );
+		if ( isset( $this->destClasses[$lcDest]) ) {
+			$this->error( "Duplicate qualified class name \"$dest\", " .
+				"from sources \"$source\" and \"{$this->destClasses[$lcDest]}\"" );
+		}
+
+		if ( isset( $this->aliases[$source] ) ) {
+			$this->error( "Duplicate source class name \"$source\"" );
+		}
+
+		$lcLastPart = strtolower( end( $parts ) );
+		$this->destNames[$lcLastPart][] = $dest;
+		$this->destClasses[$lcDest] = $source;
+		$this->aliases[$source] = $dest;
+	}
+
+	private function resetAliases() {
+		$this->aliases = [];
+		$this->valid = true;
+	}
+
+	private function reportSoftConflicts() {
+		foreach ( $this->destNames as $name => $nameList ) {
+			if ( count ( $nameList ) > 1 ) {
+				$this->warn( "Duplicate unqualified name $name: " . implode( ', ', $nameList ) );
+			}
+		}
+	}
+
+	public function getAliases() {
+		$this->resetAliases();
+
+		foreach ( $this->autoloadClasses as $class => $file ) {
+			$this->processClass( $class, $file );
+		}
+
+		$this->reportSoftConflicts();
+
+		foreach ( self::$existingAliases as $source => $dest ) {
+			$this->aliases[$source] = $dest;
+		}
+		return $this->valid ? $this->aliases : false;
+	}
+
+	private function processClass( $class, $file ) {
+		$dir = dirname( $file );
+
+		if ( isset( self::$existingAliases[$class] ) ) {
+			return;
+		}
+
+		if ( isset( self::$renamedClasses[$class] ) ) {
+			$this->addAlias( $class, self::$renamedClasses[$class] );
+			return;
+		}
+		
+		if ( isset( self::$namespacesByClass[$class] ) ) {
+			$this->addAlias( $class, self::$namespacesByClass[$class] . '\\' . $class );
+			return;
+		}
+
+		if ( isset( self::$deprefixesByDir[$dir] ) ) {
+			list( $namespace, $prefix ) = self::$deprefixesByDir[$dir];
+			if ( $this->startsWith( $class, $prefix ) ) {
+				$this->addAlias( $class, $namespace . '\\' . substr( $class, strlen( $prefix ) ) );
+				return;
+			} else {
+				$this->addAlias( $class, $namespace . '\\' . $class );
+				return;
+			}
+		}
+
+		if ( isset( self::$namespacesByDir[$dir] ) ) {
+			$namespace = self::$namespacesByDir[$dir];
+			$slashPos = strrpos( $class, '\\' );
+			if ( $slashPos !== false ) {
+				$priorNamespace = substr( $class, 0, $slashPos );
+				$classPart = substr( $class, $slashPos + 1 );
+				
+				if ( $priorNamespace !== $namespace ) {
+					$this->addAlias( $class, $namespace . '\\' . $classPart );
+					return;
+				} else {
+					return;
+				}
+			} else {
+				$this->addAlias( $class, $namespace . '\\' . $class );
+				return;
+			}
+		}
+
+		foreach ( self::$ignoreDirs as $ignoreDir ) {
+			if ( $this->startsWith( $dir, "$ignoreDir/" ) || $dir === $ignoreDir ) {
+				return;
+			}
+		}
+
+		if ( $dir === '.' ) {
+			// profileinfo.php
+			return;
+		}
+
+		$this->error( "Don't know what to do with class $class in directory $dir" );
 	}
 }
